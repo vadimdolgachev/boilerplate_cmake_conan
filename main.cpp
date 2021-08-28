@@ -20,25 +20,31 @@ namespace net = boost::asio;            // from <boost/asio.hpp>
 namespace ssl = boost::asio::ssl;       // from <boost/asio/ssl.hpp>
 using tcp = boost::asio::ip::tcp;       // from <boost/asio/ip/tcp.hpp>
 
-
 struct Uri {
     std::string host;
     std::string target;
     std::string port;
 
     static Uri parse(const char *url) {
+        enum UriScheme {
+            Protocol = 2,
+            Host,
+            Port,
+            Path,
+            Query
+        };
         Uri uri;
-        const boost::regex rx("(http|https)://([^/ :]+):?([^/ ]*)(/?[^ #?]*)\\x3f?([^ #]*)#?([^ ]*)");
+        const boost::regex rx("((http|https)://)?([^/ :]+):?([^/ ]*)(/?[^ #?]*)\\x3f?([^ #]*)#?([^ ]*)");
         boost::cmatch match;
         if (regex_match(url, match, rx)) {
-            const auto protocol = match[1].str();
-            uri.host = match[2].str();
-            uri.port = match[3].str();
+            const auto protocol = match[UriScheme::Protocol].str();
+            uri.host = match[UriScheme::Host].str();
+            uri.port = match[UriScheme::Port].str();
             if (uri.port.empty()) {
                 uri.port = (protocol == "https") ? "443" : "80";
             }
-            const auto path = match[4].length() > 0 ? match[4].str() : "/";
-            const auto query = match[5].str();
+            const auto path = match[UriScheme::Path].length() > 0 ? match[UriScheme::Path].str() : "/";
+            const auto query = match[UriScheme::Query].str();
             uri.target = path + (query.empty() ? "" : "?" + query);
         }
         return uri;
@@ -46,7 +52,7 @@ struct Uri {
 };
 
 class Session : public std::enable_shared_from_this<Session> {
-    constexpr static int HTTT_VERSION = 11;
+    constexpr static int HTTP_VERSION = 11;
     constexpr static auto TIMEOUT_SECS = std::chrono::seconds(30);
     tcp::resolver resolver;
     boost::optional<beast::ssl_stream<beast::tcp_stream>> stream;
@@ -54,20 +60,20 @@ class Session : public std::enable_shared_from_this<Session> {
     boost::optional<http::request<http::empty_body>> request;
     http::response<http::string_body> response;
     net::any_io_executor executor;
-    ssl::context &context;
+    ssl::context sslContext;
 
 public:
-    explicit Session(const net::any_io_executor& executor_, ssl::context &context_)
+    explicit Session(const net::any_io_executor &executor_, ssl::context &&sslContext_)
         : resolver(executor_),
           executor(executor_),
-          context(context_) {
+          sslContext(std::move(sslContext_)) {
 
     }
 
     void get(const Uri &uri) {
         fmt::print("get {}{}\n", uri.host, uri.target);
 
-        stream = beast::ssl_stream<beast::tcp_stream>(executor, context);
+        stream = beast::ssl_stream<beast::tcp_stream>(executor, sslContext);
 
         if (!SSL_set_tlsext_host_name(stream->native_handle(), uri.host.c_str())) {
             beast::error_code ec{static_cast<int>(::ERR_get_error()),
@@ -78,7 +84,7 @@ public:
 
         request = http::request<http::empty_body>(http::verb::get,
                                                   uri.target,
-                                                  HTTT_VERSION);
+                                                  HTTP_VERSION);
         request->set(http::field::host, uri.host);
 
         resolver.async_resolve(uri.host,
@@ -171,15 +177,19 @@ private:
     }
 };
 
+ssl::context createSslContext() {
+    ssl::context sslContext{ssl::context::tlsv12_client};
+    load_root_certificates(sslContext);
+    sslContext.set_verify_mode(ssl::verify_peer);
+    return sslContext;
+}
+
 int main(int argc, char *argv[]) {
     const Uri &uri = Uri::parse(argc > 1 ? argv[1] : "https://www.google.com");
     fmt::print("host={}, port={}, target={}\n",
                uri.host, uri.port, uri.target);
-    ssl::context sslContext{ssl::context::tlsv12_client};
-    load_root_certificates(sslContext);
-    sslContext.set_verify_mode(ssl::verify_peer);
-    net::io_context ioc;
-    std::make_shared<Session>(net::make_strand(ioc), sslContext)->get(uri);
-    ioc.run();
+    net::io_context ioContext;
+    std::make_shared<Session>(net::make_strand(ioContext), createSslContext())->get(uri);
+    ioContext.run();
     return EXIT_SUCCESS;
 }
