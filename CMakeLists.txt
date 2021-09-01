@@ -12,7 +12,7 @@ conan_cmake_configure(REQUIRES
         GENERATORS cmake_find_package)
 conan_cmake_install(PATH_OR_REFERENCE .
         BUILD missing
-        REMOTE conan-center
+        REMOTE conancenter
         SETTINGS ${settings})
 
 find_package(fmt REQUIRED)
